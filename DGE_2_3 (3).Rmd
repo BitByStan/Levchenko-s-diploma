@@ -1,0 +1,273 @@
+---
+title: "limma"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    code_folding: hide
+    df_print: paged
+    highlights: pygments
+    number_sections: true
+    self_contained: true
+    theme: default
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+  word_document:
+    toc: true
+---
+
+```{r include = FALSE, results = "hide", message = FALSE, warning = FALSE}
+# install.packages("pacman")
+# install.packages('BiocManager')
+# install.packages(c("gage","gageData"))
+# pacman::p_load("tidyverse", "EnhancedVolcano", "limma", "cowplot", "plotly")
+library(tidyverse)
+library(clusterProfiler)
+library(biomaRt)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+results <- read.csv("difexp_2-3_new.csv")
+```
+
+\newpage
+
+# MA plot
+```{r, fig.width = 6, fig.height = 5}
+# Define thresholds for significance
+logFC_threshold <- 1    # Threshold for log fold change
+pval_threshold <- 0.05  # Threshold for adjusted p-value
+avg_exp_threshold <- 0  # Threshold for average expression
+
+# Add a new column to categorize genes based on logFC and p-value
+results$Category <- ifelse(
+  results$adj.P.Val < pval_threshold &
+      results$logFC > logFC_threshold, "Upregulated",
+  ifelse(results$adj.P.Val < pval_threshold & 
+             results$logFC < -logFC_threshold, "Downregulated", "Non-significant"))
+
+# Add a new column to categorize genes based on logFC
+results$status <- ifelse(
+  results$logFC > logFC_threshold, "Upregulated",
+  ifelse(results$logFC < -logFC_threshold, "Downregulated", "Non-significant")
+)
+
+# Top diff expressed genes
+results$abs_logFC <- abs(results$logFC)
+top_genes <- results |> 
+  # Make ranking based on absolute logFC and adj.P.Val
+  mutate(pi_value = abs_logFC*(-log10(adj.P.Val))) |> 
+  arrange(desc(pi_value)) |>
+  slice_head(n = 20)  # Select the top 20 genes
+
+# Create an MA plot
+ggplot(results, aes(x = AveExpr, y = logFC, color = status)) +
+  geom_point(size = 1.5) +  # Scatter points
+  scale_color_manual(
+    values = c("Non-significant" = rgb(0, 0, 0, 0.4), 
+               "Upregulated" = rgb(1, 0, 0, 0.4), 
+               "Downregulated" = rgb(0, 0, 1, 0.4))) +
+  geom_text(data = top_genes, 
+            aes(label = SYMBOL), 
+            size = 4, vjust = -0.5, color = "black") +
+  theme_minimal() +  # Clean theme
+  labs(
+    title = "MA Plot of Differential Gene Expression",
+    x = "Average Expression (AveExpr)",
+    y = "Log2 Fold Change (logFC)",
+    color = "Category") +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    axis.line = element_line(color = "black", linewidth = 1),  # Add black axis lines
+    axis.ticks = element_line(color = "black"),  # Add black axis ticks
+    axis.ticks.length = unit(0.2, "cm")) +  # Customize the length of ticks
+  # Threshold lines for logFC
+  geom_hline(yintercept = c(-1, 1), linetype = "dashed", color = "grey")
+```
+
+\newpage
+
+# Volcano plot
+```{r, fig.width = 6, fig.height = 6}
+ggplot(results, aes(x = logFC, y = -log10(adj.P.Val), color = Category)) +
+  geom_point(size = 2) +
+  scale_color_manual(
+    values = c("Non-significant" = rgb(0, 0, 0, 0.4), 
+               "Upregulated" = rgb(1, 0, 0, 0.4), 
+               "Downregulated" = rgb(0, 0, 1, 0.4))
+  ) +
+  geom_text(data = top_genes, 
+            aes(label = SYMBOL), 
+            size = 4, vjust = -0.5, color = "black") +
+  theme_minimal() +
+  labs(title = "Differential Gene Expression",
+       x = "logFC",
+       y = "-log10(P.Value)",
+       color = "Category") +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5),
+    axis.line = element_line(color = "black", linewidth = 1),  # Add black axis lines
+    axis.ticks = element_line(color = "black"),  # Add black axis ticks
+    axis.ticks.length = unit(0.2, "cm")  # Customize the length of ticks
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black")
+```
+
+\newpage
+
+# Smooth scatter plot
+```{r}
+smoothScatter(results$AveExpr, results$logFC, 
+              xlab="Average Expression (log2 scale)", 
+              ylab="Log Fold Change",
+              main="Smooth Scatter Plot of Differential Expression")
+```
+
+\newpage
+
+# Top 20 genes
+```{r}
+top_genes$SYMBOL
+```
+
+\newpage
+
+# Gene Ontology over-representation analysis with EnrichGO
+```{r, fig.width = 6, fig.height = 6}
+# Selecting significant genes
+significant_genes <- results[results$adj.P.Val < 0.05 & results$abs_logFC > 1, ]
+
+ora_res <- enrichGO(gene=na.omit(significant_genes$ENTREZID),
+                    OrgDb=org.Hs.eg.db, 
+                    ont="BP", 
+                    pAdjustMethod="BH", 
+                    pvalueCutoff=0.05, 
+                    readable=TRUE)
+
+# Plot results
+barplot(ora_res, showCategory=10)
+```
+
+```{r}
+# Вибір значущих генів
+significant_genes <- results[results$adj.P.Val < 0.05 & abs(results$logFC) > 1, ]
+
+# GO-аналіз
+go_enrich <- enrichGO(
+  gene = na.omit(significant_genes$ENTREZID),
+  OrgDb = org.Hs.eg.db,
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+# Перетворити результати в датафрейм
+go_df <- as.data.frame(go_enrich)
+
+# Таблиця генів для кожного GO-терміна
+go_genes_table <- go_df[, c("ID", "Description", "geneID")]
+go_genes_table$geneID <- strsplit(as.character(go_genes_table$geneID), "/")
+go_genes_expanded <- tidyr::unnest(go_genes_table, cols = c(geneID))
+
+# Зберегти у файл
+write.csv(go_genes_expanded, "go_genes_table.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+# Встановлення необхідних пакетів
+if (!requireNamespace("pathview")) install.packages("pathview")
+
+library(pathview)
+
+gene_list <- significant_genes$logFC
+names(gene_list) <- significant_genes$ENTREZID
+
+# KEGG pathway IDs (людські шляхи починаються з "hsa")
+# Наприклад:
+# Wnt/β-catenin — hsa04310
+# TGF-beta — hsa04350
+# PI3K-Akt — hsa04151
+# JAK-STAT — hsa04630
+
+# Візуалізація одного з них:
+pathview(gene.data = gene_list,
+         pathway.id = "hsa04350", # Wnt
+         species = "hsa",
+         out.suffix = "TGF-beta_pathway",
+         limit = list(gene = c(-2, 2))
+         )
+pathview(gene.data = gene_list,
+         pathway.id = "hsa04310", # Wnt
+         species = "hsa",
+         out.suffix = "Wnt_pathway",
+         limit = list(gene = c(-2, 2))
+         )
+pathview(gene.data = gene_list,
+         pathway.id = "hsa04151", # Wnt
+         species = "hsa",
+         out.suffix = "PI3K-Akt_pathway",
+         limit = list(gene = c(-2, 2))
+         )
+pathview(gene.data = gene_list,
+         pathway.id = "hsa04630", # Wnt
+         species = "hsa",
+         out.suffix = "JAK-STAT_pathway",
+         limit = list(gene = c(-2, 2))
+         )
+
+```
+
+
+
+```{r fig.height=16, fig.width=6}
+if (!requireNamespace("ReactomePA")) BiocManager::install("ReactomePA")
+
+library(ReactomePA)
+
+foldchanges <- results$logFC
+names(foldchanges) <- results$ENTREZID
+
+# Аналіз з Reactome (він автоматично працює з ENTREZ ID)
+reactome_res <- enrichPathway(gene = names(foldchanges)[abs(foldchanges) > 1],
+                              organism = "human",
+                              pvalueCutoff = 0.05,
+                              readable = TRUE)
+
+# Візуалізація
+dotplot(reactome_res, showCategory = 20)
+```
+
+
+```{r}
+
+library(gage)
+library(gageData)
+
+data("kegg.sets.hs")
+data("sigmet.idx.hs")
+kegg.sets.hs <- kegg.sets.hs[sigmet.idx.hs]
+
+keggres <- gage(
+    exprs = foldchanges, 
+    gsets = kegg.sets.hs, 
+    same.dir = TRUE
+)
+
+keggrespathways <- data.frame(
+    id = rownames(keggres$greater), keggres$greater) %>%
+    tibble::as_tibble() %>%
+    filter(row_number() <= 20) %>%
+    .$id %>%
+    as.character()
+
+keggrespathways
+```
